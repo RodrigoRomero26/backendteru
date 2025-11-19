@@ -18,7 +18,20 @@ const parseForm = (req) => {
   });
 };
 
-// Helper to convert file to base64
+// Helper to get MIME type from file extension
+const getMimeType = (filename) => {
+  const ext = filename.toLowerCase().split('.').pop();
+  const mimeTypes = {
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png',
+    'gif': 'image/gif',
+    'webp': 'image/webp'
+  };
+  return mimeTypes[ext] || 'image/jpeg';
+};
+
+// Helper to convert file to base64 for Resend attachments
 const fileToBase64 = async (filePath) => {
   // In Vercel serverless, multiparty saves files to /tmp automatically
   return new Promise((resolve, reject) => {
@@ -77,28 +90,100 @@ export default async function handler(req, res) {
       descripcion: getValue(fields.descripcion)
     };
 
-    // Organize images by category for inline display
+    // Organize images by category for inline display using Resend attachments
     const imageCategories = {
       'pose-imagen': [],
       'outfit-imagen': [],
       'referencias-imagen': []
     };
     
+    // Track large images that will be sent as regular attachments
+    const largeImageAttachments = {
+      'pose-imagen': [],
+      'outfit-imagen': [],
+      'referencias-imagen': []
+    };
+    
     // Process each file field and organize by category
+    // Resend supports up to 25MB per attachment
+    // Images <= 10MB will be inline, images > 10MB will be regular attachments
+    const MAX_INLINE_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB for inline images
+    const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024; // 25MB max per attachment (Resend limit)
+    const MAX_TOTAL_IMAGES = 20; // Total images (inline + attachments)
+    let totalImages = 0;
+    const inlineAttachments = [];
+    const regularAttachments = [];
+    
     for (const fieldName of Object.keys(imageCategories)) {
-      if (files[fieldName]) {
+      if (files[fieldName] && totalImages < MAX_TOTAL_IMAGES) {
         const fieldFiles = Array.isArray(files[fieldName]) ? files[fieldName] : [files[fieldName]];
+        let processedCount = 0;
         
-        for (let i = 0; i < fieldFiles.length; i++) {
+        for (let i = 0; i < fieldFiles.length && totalImages < MAX_TOTAL_IMAGES; i++) {
           const file = fieldFiles[i];
-          const content = await fileToBase64(file.path);
-          const cid = `${fieldName}-${i}`;
           
-          imageCategories[fieldName].push({
-            cid: cid,
-            filename: file.originalFilename,
-            content: content
-          });
+          // Check file size
+          const stats = fs.statSync(file.path);
+          
+          // Skip if exceeds Resend's maximum attachment size
+          if (stats.size > MAX_ATTACHMENT_SIZE) {
+            console.warn(`Image ${file.originalFilename} exceeds maximum size (${(stats.size / 1024 / 1024).toFixed(2)}MB), skipping`);
+            fs.unlink(file.path, () => {});
+            continue;
+          }
+          
+          const base64Content = await fileToBase64(file.path);
+          const mimeType = getMimeType(file.originalFilename);
+          
+          if (stats.size <= MAX_INLINE_IMAGE_SIZE) {
+            // Small enough for inline display
+            const cid = `${fieldName}-${totalImages}`;
+            
+            // Store image info for HTML
+            imageCategories[fieldName].push({
+              cid: cid,
+              filename: file.originalFilename,
+              isInline: true
+            });
+            
+            // Add to inline attachments for Resend
+            inlineAttachments.push({
+              filename: file.originalFilename,
+              content: base64Content,
+              cid: cid,
+              content_type: mimeType
+            });
+          } else {
+            // Too large for inline, send as regular attachment
+            console.log(`Image ${file.originalFilename} (${(stats.size / 1024 / 1024).toFixed(2)}MB) will be sent as attachment`);
+            
+            // Store info for HTML (to show a note that it's attached)
+            imageCategories[fieldName].push({
+              filename: file.originalFilename,
+              isInline: false,
+              size: stats.size
+            });
+            
+            // Add to regular attachments (no CID)
+            regularAttachments.push({
+              filename: file.originalFilename,
+              content: base64Content,
+              content_type: mimeType
+            });
+            
+            largeImageAttachments[fieldName].push(file.originalFilename);
+          }
+          
+          totalImages++;
+          processedCount++;
+        }
+        
+        // Clean up any remaining unprocessed files in this category
+        for (let i = processedCount; i < fieldFiles.length; i++) {
+          const file = fieldFiles[i];
+          if (fs.existsSync(file.path)) {
+            fs.unlink(file.path, () => {});
+          }
         }
       }
     }
@@ -157,17 +242,28 @@ export default async function handler(req, res) {
       gap: 10px;
     }
     .image-item {
-      max-width: 200px;
-      max-height: 200px;
+      max-width: 400px;
+      max-height: 400px;
       border-radius: 8px;
       border: 2px solid #f8bbd0;
       overflow: hidden;
+      margin-bottom: 10px;
     }
     .image-item img {
       width: 100%;
-      height: 100%;
-      object-fit: cover;
+      height: auto;
+      max-height: 400px;
+      object-fit: contain;
       display: block;
+    }
+    .attachment-note {
+      background: #fff3cd;
+      padding: 10px;
+      border-radius: 5px;
+      border-left: 3px solid #ffc107;
+      margin-top: 5px;
+      font-size: 12px;
+      color: #856404;
     }
     .footer {
       text-align: center;
@@ -203,11 +299,19 @@ export default async function handler(req, res) {
       <div class="field-value">${formData.pose}</div>
       ${imageCategories['pose-imagen'].length > 0 ? `
       <div class="images-container">
-        ${imageCategories['pose-imagen'].map(img => `
+        ${imageCategories['pose-imagen'].map(img => {
+          if (img.isInline) {
+            return `
           <div class="image-item">
             <img src="cid:${img.cid}" alt="Pose reference" />
-          </div>
-        `).join('')}
+          </div>`;
+          } else {
+            return `
+          <div class="attachment-note">
+            📎 ${img.filename} (${(img.size / 1024 / 1024).toFixed(2)}MB) - attached to email
+          </div>`;
+          }
+        }).join('')}
       </div>
       ` : ''}
     </div>
@@ -218,11 +322,19 @@ export default async function handler(req, res) {
       <div class="field-value">${formData.outfit}</div>
       ${imageCategories['outfit-imagen'].length > 0 ? `
       <div class="images-container">
-        ${imageCategories['outfit-imagen'].map(img => `
+        ${imageCategories['outfit-imagen'].map(img => {
+          if (img.isInline) {
+            return `
           <div class="image-item">
             <img src="cid:${img.cid}" alt="Outfit reference" />
-          </div>
-        `).join('')}
+          </div>`;
+          } else {
+            return `
+          <div class="attachment-note">
+            📎 ${img.filename} (${(img.size / 1024 / 1024).toFixed(2)}MB) - attached to email
+          </div>`;
+          }
+        }).join('')}
       </div>
       ` : ''}
     </div>
@@ -233,11 +345,19 @@ export default async function handler(req, res) {
       <div class="field-value">${formData.referencias}</div>
       ${imageCategories['referencias-imagen'].length > 0 ? `
       <div class="images-container">
-        ${imageCategories['referencias-imagen'].map(img => `
+        ${imageCategories['referencias-imagen'].map(img => {
+          if (img.isInline) {
+            return `
           <div class="image-item">
             <img src="cid:${img.cid}" alt="Reference image" />
-          </div>
-        `).join('')}
+          </div>`;
+          } else {
+            return `
+          <div class="attachment-note">
+            📎 ${img.filename} (${(img.size / 1024 / 1024).toFixed(2)}MB) - attached to email
+          </div>`;
+          }
+        }).join('')}
       </div>
       ` : ''}
     </div>
@@ -254,26 +374,45 @@ export default async function handler(req, res) {
 </html>
     `;
 
-    // Prepare inline attachments (images embedded in email)
-    const inlineAttachments = [];
-    for (const category of Object.keys(imageCategories)) {
-      for (const img of imageCategories[category]) {
-        inlineAttachments.push({
-          filename: img.filename,
-          content: img.content,
-          cid: img.cid
-        });
-      }
+    // Combine inline and regular attachments
+    const allAttachments = [...inlineAttachments, ...regularAttachments];
+    
+    // Check if using Resend template (set RESEND_TEMPLATE_ID in environment variables)
+    const templateId = process.env.RESEND_TEMPLATE_ID;
+    
+    let emailResponse;
+    
+    if (templateId) {
+      // Use Resend template with variables
+      emailResponse = await resend.emails.send({
+        from: 'Commission Form <onboarding@resend.dev>',
+        to: process.env.RECIPIENT_EMAIL,
+        template_id: templateId,
+        template_data: {
+          nombre: formData.nombre,
+          contactType: formData.contactType,
+          contactValue: formData.contactValue,
+          tipo: formData.tipo,
+          pose: formData.pose,
+          outfit: formData.outfit || '',
+          referencias: formData.referencias,
+          descripcion: formData.descripcion,
+          poseImages: imageCategories['pose-imagen'],
+          outfitImages: imageCategories['outfit-imagen'],
+          referenciasImages: imageCategories['referencias-imagen']
+        },
+        attachments: allAttachments.length > 0 ? allAttachments : undefined
+      });
+    } else {
+      // Send email with custom HTML (images embedded as inline attachments with CID)
+      emailResponse = await resend.emails.send({
+        from: 'Commission Form <onboarding@resend.dev>', // Cambia esto a tu dominio verificado
+        to: process.env.RECIPIENT_EMAIL, // Email donde recibirás las solicitudes
+        subject: `New Commission Request from ${formData.nombre}`,
+        html: htmlContent,
+        attachments: allAttachments.length > 0 ? allAttachments : undefined
+      });
     }
-
-    // Send email using Resend
-    const emailResponse = await resend.emails.send({
-      from: 'Commission Form <onboarding@resend.dev>', // Cambia esto a tu dominio verificado
-      to: process.env.RECIPIENT_EMAIL, // Email donde recibirás las solicitudes
-      subject: `New Commission Request from ${formData.nombre}`,
-      html: htmlContent,
-      attachments: inlineAttachments.length > 0 ? inlineAttachments : undefined
-    });
 
     console.log('Email sent successfully:', emailResponse);
 
