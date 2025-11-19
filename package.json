@@ -2,12 +2,10 @@
   "name": "commission-form-backend",
   "version": "1.0.0",
   "description": "Backend API for commission form",
-  "main": "api/send-email.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
+  "type": "module",
   "dependencies": {
     "resend": "^4.0.0",
+    "multiparty": "^4.2.3",
     "next": "16.0.3",
     "react": "19.2.0",
     "react-dom": "19.2.0",
