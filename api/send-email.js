@@ -64,6 +64,39 @@ export default async function handler(req, res) {
     // Get image URLs from request (already uploaded to Cloudinary)
     const imageUrls = body.images || {};
 
+    // Function to generate contact link based on contact type
+    function getContactLink(contactType, contactValue) {
+      if (!contactValue) return null;
+      
+      // Remove @ symbol if present
+      const cleanValue = contactValue.replace(/^@/, '').trim();
+      
+      switch (contactType.toLowerCase()) {
+        case 'instagram':
+          // Instagram profile link (user can click message button from there)
+          // Alternative: https://www.instagram.com/direct/t/${cleanValue}/ but requires login
+          return `https://www.instagram.com/${cleanValue}/`;
+        case 'twitter':
+          // Twitter/X profile link (user can click message button from there)
+          // Alternative direct message: https://twitter.com/messages/compose?screen_name=${cleanValue}
+          return `https://twitter.com/${cleanValue}`;
+        case 'mail':
+        case 'email':
+          // Mailto link - opens default email client
+          return `mailto:${cleanValue}`;
+        default:
+          return null;
+      }
+    }
+
+    // Get contact link
+    const contactLink = getContactLink(formData.contactType, formData.contactValue);
+    const contactButtonText = formData.contactType === 'mail' || formData.contactType === 'email' 
+      ? '📧 Enviar Email' 
+      : formData.contactType === 'instagram' 
+      ? '📷 Abrir Instagram' 
+      : '🐦 Abrir Twitter/X';
+
     // Organize images by category from Cloudinary URLs (already uploaded from frontend)
     const imageCategories = {
       'pose-imagen': [],
@@ -170,6 +203,37 @@ export default async function handler(req, res) {
       color: #999;
       font-size: 12px;
     }
+    .contact-buttons {
+      margin-top: 10px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .contact-button {
+      display: inline-block;
+      padding: 10px 20px;
+      border-radius: 20px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 14px;
+      color: white;
+      transition: all 0.3s ease;
+      border: none;
+      cursor: pointer;
+    }
+    .contact-button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    }
+    .contact-button.instagram {
+      background: linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%);
+    }
+    .contact-button.twitter {
+      background: #1DA1F2;
+    }
+    .contact-button.mail {
+      background: linear-gradient(135deg, #ec4078 0%, #ff6b9d 100%);
+    }
   </style>
 </head>
 <body>
@@ -184,7 +248,16 @@ export default async function handler(req, res) {
 
     <div class="field">
       <span class="field-label">Contact:</span>
-      <div class="field-value">${formData.contactType}: ${formData.contactValue}</div>
+      <div class="field-value">
+        ${formData.contactType}: ${formData.contactValue}
+        ${contactLink ? `
+        <div class="contact-buttons">
+          <a href="${contactLink}" target="_blank" rel="noopener noreferrer" class="contact-button ${formData.contactType.toLowerCase()}">
+            ${contactButtonText}
+          </a>
+        </div>
+        ` : ''}
+      </div>
     </div>
 
     <div class="field">
