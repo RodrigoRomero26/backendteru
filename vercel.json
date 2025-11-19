@@ -25,7 +25,8 @@
   "functions": {
     "api/send-email.js": {
       "maxDuration": 30,
-      "memory": 1024
+      "memory": 1024,
+      "maxRequestBodySize": 52428800
     }
   }
 }
