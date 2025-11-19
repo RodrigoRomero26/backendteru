@@ -38,15 +38,17 @@ const fileToBase64 = async (filePath) => {
 };
 
 export default async function handler(req, res) {
-  // Set CORS headers for all requests
-  // Allow all origins for development, but you can restrict this in production
+  // Set CORS headers for all requests - MUST be set before any response
   const origin = req.headers.origin || '*';
+  
+  // Set all CORS headers
   res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS, GET');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+  res.setHeader('Access-Control-Allow-Credentials', 'false');
   res.setHeader('Access-Control-Max-Age', '86400'); // 24 hours
 
-  // Handle preflight request
+  // Handle preflight request - MUST return early with headers
   if (req.method === 'OPTIONS') {
     res.status(200).end();
     return;
