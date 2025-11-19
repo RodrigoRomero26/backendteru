@@ -1,4 +1,7 @@
 {
+  "version": 2,
+  "buildCommand": "echo 'No build step required'",
+  "outputDirectory": ".",
   "functions": {
     "api/send-email.js": {
       "maxDuration": 30,
