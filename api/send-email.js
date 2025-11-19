@@ -1,5 +1,7 @@
 import { Resend } from 'resend';
 import multiparty from 'multiparty';
+import fs from 'fs';
+import path from 'path';
 
 // Initialize Resend with your API key
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -18,11 +20,19 @@ const parseForm = (req) => {
 
 // Helper to convert file to base64
 const fileToBase64 = async (filePath) => {
-  const fs = require('fs');
+  // In Vercel serverless, multiparty saves files to /tmp automatically
   return new Promise((resolve, reject) => {
     fs.readFile(filePath, (err, data) => {
-      if (err) reject(err);
-      else resolve(data.toString('base64'));
+      if (err) {
+        reject(err);
+      } else {
+        const base64 = data.toString('base64');
+        // Clean up temporary file after reading
+        fs.unlink(filePath, (unlinkErr) => {
+          if (unlinkErr) console.warn('Failed to delete temp file:', unlinkErr);
+        });
+        resolve(base64);
+      }
     });
   });
 };
