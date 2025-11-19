@@ -296,6 +296,17 @@ export default async function handler(req, res) {
 </html>
     `;
 
+    // Email configuration from environment variables
+    // RESEND_FROM_EMAIL: Email del remitente usando tu dominio verificado (ej: "noreply@tudominio.com")
+    // RECIPIENT_EMAIL: Email donde recibirás las solicitudes (puede ser cualquier email)
+    const fromEmail = process.env.RESEND_FROM_EMAIL || 'Commission Form <noreply@tudominio.com>';
+    const recipientEmail = process.env.RECIPIENT_EMAIL;
+    
+    // Validate required environment variables
+    if (!recipientEmail) {
+      throw new Error('RECIPIENT_EMAIL environment variable is not set');
+    }
+    
     // Check if using Resend template (set RESEND_TEMPLATE_ID in environment variables)
     const templateId = process.env.RESEND_TEMPLATE_ID;
     
@@ -304,8 +315,8 @@ export default async function handler(req, res) {
     if (templateId) {
       // Use Resend template with variables
       emailResponse = await resend.emails.send({
-        from: 'Commission Form <onboarding@resend.dev>',
-        to: process.env.RECIPIENT_EMAIL,
+        from: fromEmail,
+        to: recipientEmail,
         template_id: templateId,
         template_data: {
           nombre: formData.nombre,
@@ -324,8 +335,8 @@ export default async function handler(req, res) {
     } else {
       // Send email with custom HTML (images from Cloudinary URLs)
       emailResponse = await resend.emails.send({
-        from: 'Commission Form <onboarding@resend.dev>', // Cambia esto a tu dominio verificado
-        to: process.env.RECIPIENT_EMAIL, // Email donde recibirás las solicitudes
+        from: fromEmail,
+        to: recipientEmail,
         subject: `New Commission Request from ${formData.nombre}`,
         html: htmlContent
       });
