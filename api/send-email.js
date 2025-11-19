@@ -2,9 +2,23 @@ import { Resend } from 'resend';
 import multiparty from 'multiparty';
 import fs from 'fs';
 import path from 'path';
+import { v2 as cloudinary } from 'cloudinary';
 
 // Initialize Resend with your API key
 const resend = new Resend(process.env.RESEND_API_KEY);
+
+// Initialize Cloudinary if credentials are provided
+const useCloudinary = process.env.CLOUDINARY_CLOUD_NAME && 
+                      process.env.CLOUDINARY_API_KEY && 
+                      process.env.CLOUDINARY_API_SECRET;
+
+if (useCloudinary) {
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+  });
+}
 
 // Helper function to parse form data
 const parseForm = (req) => {
@@ -47,6 +61,43 @@ const fileToBase64 = async (filePath) => {
         resolve(base64);
       }
     });
+  });
+};
+
+// Helper to upload image to Cloudinary
+const uploadToCloudinary = async (filePath, filename, category) => {
+  return new Promise((resolve, reject) => {
+    // Use category as folder name for organization
+    const folder = `commission-requests/${category}`;
+    
+    cloudinary.uploader.upload(
+      filePath,
+      {
+        folder: folder,
+        public_id: `${Date.now()}-${filename.replace(/\.[^/.]+$/, '')}`,
+        resource_type: 'auto',
+        quality: 'auto:good', // Auto quality optimization
+        fetch_format: 'auto' // Auto format (webp when possible)
+      },
+      (error, result) => {
+        // Clean up temporary file
+        fs.unlink(filePath, () => {});
+        
+        if (error) {
+          reject(error);
+        } else {
+          resolve({
+            url: result.secure_url, // HTTPS URL for email display
+            publicUrl: result.url, // Public HTTP URL (also accessible)
+            publicId: result.public_id,
+            width: result.width,
+            height: result.height,
+            format: result.format,
+            bytes: result.bytes
+          });
+        }
+      }
+    );
   });
 };
 
@@ -105,14 +156,17 @@ export default async function handler(req, res) {
     };
     
     // Process each file field and organize by category
-    // Resend supports up to 25MB per attachment
-    // Images <= 10MB will be inline, images > 10MB will be regular attachments
-    const MAX_INLINE_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB for inline images
-    const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024; // 25MB max per attachment (Resend limit)
-    const MAX_TOTAL_IMAGES = 20; // Total images (inline + attachments)
+    const MAX_TOTAL_IMAGES = 20; // Total images
     let totalImages = 0;
     const inlineAttachments = [];
     const regularAttachments = [];
+    
+    // Map field names to category names for Cloudinary folders
+    const categoryMap = {
+      'pose-imagen': 'pose',
+      'outfit-imagen': 'outfit',
+      'referencias-imagen': 'referencias'
+    };
     
     for (const fieldName of Object.keys(imageCategories)) {
       if (files[fieldName] && totalImages < MAX_TOTAL_IMAGES) {
@@ -122,60 +176,89 @@ export default async function handler(req, res) {
         for (let i = 0; i < fieldFiles.length && totalImages < MAX_TOTAL_IMAGES; i++) {
           const file = fieldFiles[i];
           
-          // Check file size
-          const stats = fs.statSync(file.path);
-          
-          // Skip if exceeds Resend's maximum attachment size
-          if (stats.size > MAX_ATTACHMENT_SIZE) {
-            console.warn(`Image ${file.originalFilename} exceeds maximum size (${(stats.size / 1024 / 1024).toFixed(2)}MB), skipping`);
-            fs.unlink(file.path, () => {});
-            continue;
+          try {
+            if (useCloudinary) {
+              // Upload to Cloudinary and use URL
+              const category = categoryMap[fieldName] || 'other';
+              const uploadResult = await uploadToCloudinary(file.path, file.originalFilename, category);
+              
+              // Store image info for HTML with Cloudinary URL
+              imageCategories[fieldName].push({
+                url: uploadResult.url, // HTTPS URL for display
+                publicUrl: uploadResult.publicUrl, // Public URL for clicking
+                filename: file.originalFilename,
+                isCloudinary: true,
+                width: uploadResult.width,
+                height: uploadResult.height,
+                size: uploadResult.bytes
+              });
+              
+              console.log(`Uploaded ${file.originalFilename} to Cloudinary: ${uploadResult.url}`);
+            } else {
+              // Use Resend attachments (original method)
+              const stats = fs.statSync(file.path);
+              const MAX_INLINE_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB for inline images
+              const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024; // 25MB max per attachment
+              
+              // Skip if exceeds Resend's maximum attachment size
+              if (stats.size > MAX_ATTACHMENT_SIZE) {
+                console.warn(`Image ${file.originalFilename} exceeds maximum size (${(stats.size / 1024 / 1024).toFixed(2)}MB), skipping`);
+                fs.unlink(file.path, () => {});
+                continue;
+              }
+              
+              const base64Content = await fileToBase64(file.path);
+              const mimeType = getMimeType(file.originalFilename);
+              
+              if (stats.size <= MAX_INLINE_IMAGE_SIZE) {
+                // Small enough for inline display
+                const cid = `${fieldName}-${totalImages}`;
+                
+                // Store image info for HTML
+                imageCategories[fieldName].push({
+                  cid: cid,
+                  filename: file.originalFilename,
+                  isInline: true
+                });
+                
+                // Add to inline attachments for Resend
+                inlineAttachments.push({
+                  filename: file.originalFilename,
+                  content: base64Content,
+                  cid: cid,
+                  content_type: mimeType
+                });
+              } else {
+                // Too large for inline, send as regular attachment
+                console.log(`Image ${file.originalFilename} (${(stats.size / 1024 / 1024).toFixed(2)}MB) will be sent as attachment`);
+                
+                // Store info for HTML (to show a note that it's attached)
+                imageCategories[fieldName].push({
+                  filename: file.originalFilename,
+                  isInline: false,
+                  size: stats.size
+                });
+                
+                // Add to regular attachments (no CID)
+                regularAttachments.push({
+                  filename: file.originalFilename,
+                  content: base64Content,
+                  content_type: mimeType
+                });
+                
+                largeImageAttachments[fieldName].push(file.originalFilename);
+              }
+            }
+            
+            totalImages++;
+            processedCount++;
+          } catch (error) {
+            console.error(`Error processing image ${file.originalFilename}:`, error);
+            // Clean up file on error
+            if (fs.existsSync(file.path)) {
+              fs.unlink(file.path, () => {});
+            }
           }
-          
-          const base64Content = await fileToBase64(file.path);
-          const mimeType = getMimeType(file.originalFilename);
-          
-          if (stats.size <= MAX_INLINE_IMAGE_SIZE) {
-            // Small enough for inline display
-            const cid = `${fieldName}-${totalImages}`;
-            
-            // Store image info for HTML
-            imageCategories[fieldName].push({
-              cid: cid,
-              filename: file.originalFilename,
-              isInline: true
-            });
-            
-            // Add to inline attachments for Resend
-            inlineAttachments.push({
-              filename: file.originalFilename,
-              content: base64Content,
-              cid: cid,
-              content_type: mimeType
-            });
-          } else {
-            // Too large for inline, send as regular attachment
-            console.log(`Image ${file.originalFilename} (${(stats.size / 1024 / 1024).toFixed(2)}MB) will be sent as attachment`);
-            
-            // Store info for HTML (to show a note that it's attached)
-            imageCategories[fieldName].push({
-              filename: file.originalFilename,
-              isInline: false,
-              size: stats.size
-            });
-            
-            // Add to regular attachments (no CID)
-            regularAttachments.push({
-              filename: file.originalFilename,
-              content: base64Content,
-              content_type: mimeType
-            });
-            
-            largeImageAttachments[fieldName].push(file.originalFilename);
-          }
-          
-          totalImages++;
-          processedCount++;
         }
         
         // Clean up any remaining unprocessed files in this category
@@ -300,7 +383,15 @@ export default async function handler(req, res) {
       ${imageCategories['pose-imagen'].length > 0 ? `
       <div class="images-container">
         ${imageCategories['pose-imagen'].map(img => {
-          if (img.isInline) {
+          if (img.isCloudinary) {
+            return `
+          <div class="image-item">
+            <a href="${img.publicUrl}" target="_blank" rel="noopener noreferrer" style="display: block;">
+              <img src="${img.url}" alt="Pose reference" style="max-width: 100%; height: auto; cursor: pointer; border: 2px solid #f8bbd0; border-radius: 8px;" />
+            </a>
+            <div style="text-align: center; margin-top: 5px; font-size: 11px; color: #999;">Click to view full size</div>
+          </div>`;
+          } else if (img.isInline) {
             return `
           <div class="image-item">
             <img src="cid:${img.cid}" alt="Pose reference" />
@@ -323,7 +414,15 @@ export default async function handler(req, res) {
       ${imageCategories['outfit-imagen'].length > 0 ? `
       <div class="images-container">
         ${imageCategories['outfit-imagen'].map(img => {
-          if (img.isInline) {
+          if (img.isCloudinary) {
+            return `
+          <div class="image-item">
+            <a href="${img.publicUrl}" target="_blank" rel="noopener noreferrer" style="display: block;">
+              <img src="${img.url}" alt="Outfit reference" style="max-width: 100%; height: auto; cursor: pointer; border: 2px solid #f8bbd0; border-radius: 8px;" />
+            </a>
+            <div style="text-align: center; margin-top: 5px; font-size: 11px; color: #999;">Click to view full size</div>
+          </div>`;
+          } else if (img.isInline) {
             return `
           <div class="image-item">
             <img src="cid:${img.cid}" alt="Outfit reference" />
@@ -346,7 +445,15 @@ export default async function handler(req, res) {
       ${imageCategories['referencias-imagen'].length > 0 ? `
       <div class="images-container">
         ${imageCategories['referencias-imagen'].map(img => {
-          if (img.isInline) {
+          if (img.isCloudinary) {
+            return `
+          <div class="image-item">
+            <a href="${img.publicUrl}" target="_blank" rel="noopener noreferrer" style="display: block;">
+              <img src="${img.url}" alt="Reference image" style="max-width: 100%; height: auto; cursor: pointer; border: 2px solid #f8bbd0; border-radius: 8px;" />
+            </a>
+            <div style="text-align: center; margin-top: 5px; font-size: 11px; color: #999;">Click to view full size</div>
+          </div>`;
+          } else if (img.isInline) {
             return `
           <div class="image-item">
             <img src="cid:${img.cid}" alt="Reference image" />
