@@ -238,7 +238,7 @@ export default async function handler(req, res) {
 </head>
 <body>
   <div class="header">
-    <h1>♥ New Commission Request ♥</h1>
+    <h1>♥ New ${formData.tipo} Commission Request ♥</h1>
   </div>
   <div class="content">
     <div class="field">
@@ -410,7 +410,7 @@ export default async function handler(req, res) {
       emailResponse = await resend.emails.send({
         from: fromEmail,
         to: recipientEmail,
-        subject: `New Commission Request from ${formData.nombre}`,
+        subject: `New ${formData.tipo} Commission Request`,
         html: htmlContent
       });
     }
